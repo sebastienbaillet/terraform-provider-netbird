@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -48,30 +49,34 @@ type ReverseProxyServiceModel struct {
 	AccessRestrictions types.Object `tfsdk:"access_restrictions"`
 }
 
+const targetAccessActionInherit = string(api.ServiceTargetAccessActionInherit)
+
 // ReverseProxyServiceTargetModel describes a service target.
 type ReverseProxyServiceTargetModel struct {
-	TargetId   types.String `tfsdk:"target_id"`
-	TargetType types.String `tfsdk:"target_type"`
-	Host       types.String `tfsdk:"host"`
-	Port       types.Int64  `tfsdk:"port"`
-	Protocol   types.String `tfsdk:"protocol"`
-	Path       types.String `tfsdk:"path"`
-	Enabled    types.Bool   `tfsdk:"enabled"`
-	Options    types.Object `tfsdk:"options"`
+	TargetId     types.String `tfsdk:"target_id"`
+	TargetType   types.String `tfsdk:"target_type"`
+	Host         types.String `tfsdk:"host"`
+	Port         types.Int64  `tfsdk:"port"`
+	Protocol     types.String `tfsdk:"protocol"`
+	Path         types.String `tfsdk:"path"`
+	AccessAction types.String `tfsdk:"access_action"`
+	Enabled      types.Bool   `tfsdk:"enabled"`
+	Options      types.Object `tfsdk:"options"`
 }
 
 // TFType returns the Terraform object type for service targets.
 func (m ReverseProxyServiceTargetModel) TFType() types.ObjectType {
 	return types.ObjectType{
 		AttrTypes: map[string]attr.Type{
-			"target_id":   types.StringType,
-			"target_type": types.StringType,
-			"host":        types.StringType,
-			"port":        types.Int64Type,
-			"protocol":    types.StringType,
-			"path":        types.StringType,
-			"enabled":     types.BoolType,
-			"options":     ReverseProxyTargetOptionsModel{}.TFType(),
+			"target_id":     types.StringType,
+			"target_type":   types.StringType,
+			"host":          types.StringType,
+			"port":          types.Int64Type,
+			"protocol":      types.StringType,
+			"path":          types.StringType,
+			"access_action": types.StringType,
+			"enabled":       types.BoolType,
+			"options":       ReverseProxyTargetOptionsModel{}.TFType(),
 		},
 	}
 }
@@ -322,6 +327,17 @@ func (r *ReverseProxyService) Schema(ctx context.Context, req resource.SchemaReq
 							MarkdownDescription: "URL path prefix for this target. Defaults to \"/\" if omitted.",
 							Optional:            true,
 							Computed:            true,
+						},
+						"access_action": schema.StringAttribute{
+							MarkdownDescription: "Access action applied to requests routed to this target (HTTP only): \"inherit\" uses the service authentication, \"bypass\" skips it, \"block\" denies access. Defaults to \"inherit\".",
+							Optional:            true,
+							Computed:            true,
+							Default:             stringdefault.StaticString(targetAccessActionInherit),
+							Validators: []validator.String{stringvalidator.OneOf(
+								targetAccessActionInherit,
+								string(api.ServiceTargetAccessActionBypass),
+								string(api.ServiceTargetAccessActionBlock),
+							)},
 						},
 						"enabled": schema.BoolAttribute{
 							MarkdownDescription: "Whether this target is enabled",
@@ -640,6 +656,12 @@ func reverseProxyServiceAPIToTerraform(ctx context.Context, svc *api.Service, da
 			Path:       types.StringPointerValue(t.Path),
 			Options:    opts,
 		}
+		// Management releases without per-target access actions omit the field, which
+		// matches the default.
+		target.AccessAction = types.StringValue(targetAccessActionInherit)
+		if t.AccessAction != nil {
+			target.AccessAction = types.StringValue(string(*t.AccessAction))
+		}
 		targets = append(targets, target)
 	}
 	data.Targets, d = types.ListValueFrom(ctx, ReverseProxyServiceTargetModel{}.TFType(), targets)
@@ -912,6 +934,10 @@ func reverseProxyServiceTerraformToAPI(ctx context.Context, data *ReverseProxySe
 		if !t.Path.IsNull() && !t.Path.IsUnknown() {
 			v := t.Path.ValueString()
 			target.Path = &v
+		}
+		if !t.AccessAction.IsNull() && !t.AccessAction.IsUnknown() {
+			v := api.ServiceTargetAccessAction(t.AccessAction.ValueString())
+			target.AccessAction = &v
 		}
 
 		opts, d := targetOptionsTerraformToAPI(ctx, t.Options)

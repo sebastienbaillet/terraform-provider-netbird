@@ -124,6 +124,7 @@ Read-Only:
 
 Read-Only:
 
+- `access_action` (String) Access action applied to requests routed to this target: "inherit" uses the service authentication, "bypass" skips it, "block" denies access
 - `enabled` (Boolean) Whether this target is enabled
 - `host` (String) Backend IP or domain for this target
 - `options` (Attributes) Per-target options (see [below for nested schema](#nestedatt--targets--options))

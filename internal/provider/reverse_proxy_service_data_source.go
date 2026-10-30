@@ -119,6 +119,10 @@ func (d *ReverseProxyServiceDataSource) Schema(ctx context.Context, req datasour
 							MarkdownDescription: "URL path prefix for this target",
 							Computed:            true,
 						},
+						"access_action": schema.StringAttribute{
+							MarkdownDescription: "Access action applied to requests routed to this target: \"inherit\" uses the service authentication, \"bypass\" skips it, \"block\" denies access",
+							Computed:            true,
+						},
 						"enabled": schema.BoolAttribute{
 							MarkdownDescription: "Whether this target is enabled",
 							Computed:            true,

@@ -285,6 +285,119 @@ func Test_reverseProxyServiceRoundtrip(t *testing.T) {
 	}
 }
 
+func Test_reverseProxyServiceRoundtrip_accessAction(t *testing.T) {
+	ctx := context.Background()
+
+	original := &api.Service{
+		Id:      "svc-access",
+		Name:    "access-service",
+		Domain:  "access.example.com",
+		Enabled: true,
+		Targets: []api.ServiceTarget{
+			{
+				TargetId:     "res1",
+				TargetType:   api.ServiceTargetTargetTypeHost,
+				Port:         8080,
+				Protocol:     api.ServiceTargetProtocolHttp,
+				Enabled:      true,
+				Path:         valPtr("/"),
+				AccessAction: valPtr(api.ServiceTargetAccessActionBypass),
+			},
+			{
+				TargetId:     "res1",
+				TargetType:   api.ServiceTargetTargetTypeHost,
+				Port:         8080,
+				Protocol:     api.ServiceTargetProtocolHttp,
+				Enabled:      true,
+				Path:         valPtr("/admin/"),
+				AccessAction: valPtr(api.ServiceTargetAccessActionInherit),
+			},
+			{
+				TargetId:     "res1",
+				TargetType:   api.ServiceTargetTargetTypeHost,
+				Port:         8080,
+				Protocol:     api.ServiceTargetProtocolHttp,
+				Enabled:      true,
+				Path:         valPtr("/metrics"),
+				AccessAction: valPtr(api.ServiceTargetAccessActionBlock),
+			},
+		},
+		Auth: api.ServiceAuthConfig{
+			BearerAuth: &api.BearerAuthConfig{
+				Enabled:            true,
+				DistributionGroups: &[]string{"admins"},
+			},
+		},
+	}
+
+	var model ReverseProxyServiceModel
+	d := reverseProxyServiceAPIToTerraform(ctx, original, &model)
+	if d.HasError() {
+		t.Fatalf("APIToTerraform failed with %d errors", d.ErrorsCount())
+	}
+
+	var targets []ReverseProxyServiceTargetModel
+	d = model.Targets.ElementsAs(ctx, &targets, false)
+	if d.HasError() {
+		t.Fatal("Failed to extract targets")
+	}
+	for i, want := range []string{"bypass", "inherit", "block"} {
+		if got := targets[i].AccessAction.ValueString(); got != want {
+			t.Errorf("Target %d: expected access_action %q in state, got %q", i, want, got)
+		}
+	}
+
+	req, d := reverseProxyServiceTerraformToAPI(ctx, &model)
+	if d.HasError() {
+		t.Fatalf("TerraformToAPI failed with %d errors", d.ErrorsCount())
+	}
+	if req.Targets == nil || len(*req.Targets) != len(original.Targets) {
+		t.Fatalf("Expected %d targets in request", len(original.Targets))
+	}
+	for i, target := range *req.Targets {
+		want := *original.Targets[i].AccessAction
+		if target.AccessAction == nil || *target.AccessAction != want {
+			t.Errorf("Target %d: expected access_action %q in request, got %v", i, want, target.AccessAction)
+		}
+	}
+}
+
+func Test_reverseProxyServiceAPIToTerraform_missingAccessAction(t *testing.T) {
+	ctx := context.Background()
+
+	// Management releases that predate per-target access actions omit the field.
+	svc := &api.Service{
+		Id:      "svc-legacy",
+		Name:    "legacy-service",
+		Domain:  "legacy.example.com",
+		Enabled: true,
+		Targets: []api.ServiceTarget{
+			{
+				TargetId:   "peer1",
+				TargetType: api.ServiceTargetTargetTypePeer,
+				Port:       8080,
+				Protocol:   api.ServiceTargetProtocolHttp,
+				Enabled:    true,
+			},
+		},
+	}
+
+	var model ReverseProxyServiceModel
+	d := reverseProxyServiceAPIToTerraform(ctx, svc, &model)
+	if d.HasError() {
+		t.Fatalf("APIToTerraform failed with %d errors", d.ErrorsCount())
+	}
+
+	var targets []ReverseProxyServiceTargetModel
+	d = model.Targets.ElementsAs(ctx, &targets, false)
+	if d.HasError() {
+		t.Fatal("Failed to extract targets")
+	}
+	if got := targets[0].AccessAction.ValueString(); got != "inherit" {
+		t.Errorf("Expected access_action to default to inherit, got %q", got)
+	}
+}
+
 func Test_reverseProxyServiceRoundtrip_withOptions(t *testing.T) {
 	ctx := context.Background()
 
@@ -425,7 +538,7 @@ func Test_reverseProxyServiceRoundtrip_l4Options(t *testing.T) {
 
 func Test_reverseProxyServiceTargetModelTFType(t *testing.T) {
 	tfType := ReverseProxyServiceTargetModel{}.TFType()
-	expectedKeys := []string{"target_id", "target_type", "host", "port", "protocol", "path", "enabled", "options"}
+	expectedKeys := []string{"target_id", "target_type", "host", "port", "protocol", "path", "access_action", "enabled", "options"}
 	for _, key := range expectedKeys {
 		if _, ok := tfType.AttrTypes[key]; !ok {
 			t.Errorf("Expected key %s in TFType, not found", key)
@@ -827,8 +940,8 @@ func Test_reverseProxyServiceTFTypeConsistency(t *testing.T) {
 		t.Error("Target options type doesn't match TargetOptions TFType")
 	}
 
-	if len(targetType.AttrTypes) != 8 {
-		t.Errorf("Expected 8 target attributes, got %d", len(targetType.AttrTypes))
+	if len(targetType.AttrTypes) != 9 {
+		t.Errorf("Expected 9 target attributes, got %d", len(targetType.AttrTypes))
 	}
 }
 

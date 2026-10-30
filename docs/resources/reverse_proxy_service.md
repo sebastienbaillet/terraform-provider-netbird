@@ -118,6 +118,42 @@ resource "netbird_reverse_proxy_service" "api_gateway" {
   }
 }
 
+# HTTP service where only the admin path requires NetBird SSO
+resource "netbird_reverse_proxy_service" "idp" {
+  name             = "idp"
+  domain           = "idp.${data.netbird_reverse_proxy_domain.free.domain}"
+  pass_host_header = true
+
+  targets = [
+    {
+      target_id     = netbird_network_resource.idp.id
+      target_type   = "host"
+      port          = 8080
+      protocol      = "http"
+      path          = "/"
+      access_action = "bypass"
+    },
+    {
+      target_id   = netbird_network_resource.idp_admin.id
+      target_type = "host"
+      port        = 8080
+      protocol    = "http"
+      path        = "/admin/"
+
+      options = {
+        path_rewrite = "preserve"
+      }
+    }
+  ]
+
+  auth = {
+    bearer_auth = {
+      enabled             = true
+      distribution_groups = [netbird_group.admins.id]
+    }
+  }
+}
+
 # TLS (SNI passthrough) proxy service
 resource "netbird_reverse_proxy_service" "tls_backend" {
   name        = "tls-backend"
@@ -245,6 +281,7 @@ Required:
 
 Optional:
 
+- `access_action` (String) Access action applied to requests routed to this target (HTTP only): "inherit" uses the service authentication, "bypass" skips it, "block" denies access. Defaults to "inherit".
 - `enabled` (Boolean) Whether this target is enabled
 - `host` (String) Backend IP or domain for this target. If omitted, the API resolves it from the target peer.
 - `options` (Attributes) Per-target options (see [below for nested schema](#nestedatt--targets--options))

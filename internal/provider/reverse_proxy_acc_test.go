@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/netbirdio/netbird/shared/management/http/api"
 )
 
 func Test_ReverseProxyClusters_DataSource(t *testing.T) {
@@ -350,6 +351,79 @@ func Test_ReverseProxyService_MultipleTargets(t *testing.T) {
 	})
 }
 
+func Test_ReverseProxyService_TargetAccessAction(t *testing.T) {
+	cluster := testRequireProxyCluster(t)
+	rName := "s" + acctest.RandStringFromCharSet(8, acctest.CharSetAlpha)
+	domain := rName + "." + cluster.Address
+	rNameFull := "netbird_reverse_proxy_service." + rName
+	var createdID string
+	peerID1 := testPeerID(t, "peer1")
+	peerID2 := testPeerID(t, "peer2")
+
+	// Asserts the server holds the expected access action for each target path.
+	checkServerActions := func(want map[string]api.ServiceTargetAccessAction) resource.TestCheckFunc {
+		return func(s *terraform.State) error {
+			svc, err := testClient().ReverseProxyServices.Get(context.Background(), createdID)
+			if err != nil {
+				return fmt.Errorf("get service: %w", err)
+			}
+			if len(svc.Targets) != len(want) {
+				return fmt.Errorf("expected %d targets, got %d", len(want), len(svc.Targets))
+			}
+			for _, target := range svc.Targets {
+				if target.Path == nil {
+					return fmt.Errorf("target %s has no path", target.TargetId)
+				}
+				if target.AccessAction == nil || *target.AccessAction != want[*target.Path] {
+					return fmt.Errorf("path %s: expected access_action %q, got %v", *target.Path, want[*target.Path], target.AccessAction)
+				}
+			}
+			return nil
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testEnsureManagementRunning(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testCheckGone(testClient().ReverseProxyServices.Get, &createdID),
+		Steps: []resource.TestStep{
+			{
+				Config: testReverseProxyServiceTargetAccessAction(rName, domain, peerID1, peerID2, "bypass"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					testRecordID(rNameFull, &createdID),
+					resource.TestCheckResourceAttr(rNameFull, "targets.#", "2"),
+					resource.TestCheckResourceAttr(rNameFull, "targets.0.path", "/"),
+					resource.TestCheckResourceAttr(rNameFull, "targets.0.access_action", "bypass"),
+					resource.TestCheckResourceAttr(rNameFull, "targets.1.path", "/admin/"),
+					// Unset access_action defaults to inherit.
+					resource.TestCheckResourceAttr(rNameFull, "targets.1.access_action", "inherit"),
+					checkServerActions(map[string]api.ServiceTargetAccessAction{
+						"/":       api.ServiceTargetAccessActionBypass,
+						"/admin/": api.ServiceTargetAccessActionInherit,
+					}),
+				),
+			},
+			{
+				Config:           testReverseProxyServiceTargetAccessAction(rName, domain, peerID1, peerID2, "block"),
+				ConfigPlanChecks: updatesInPlace(rNameFull),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(rNameFull, "targets.0.access_action", "block"),
+					checkServerActions(map[string]api.ServiceTargetAccessAction{
+						"/":       api.ServiceTargetAccessActionBlock,
+						"/admin/": api.ServiceTargetAccessActionInherit,
+					}),
+				),
+			},
+			{
+				ResourceName:            rNameFull,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"auth.password_auth.password"},
+			},
+		},
+	})
+}
+
 func Test_AccountSettings_PeerExpose(t *testing.T) {
 	testE2E(t)
 	groupID := e2eGroupAllID()
@@ -516,6 +590,39 @@ resource "netbird_reverse_proxy_service" "%s" {
     }
   }
 }`, rName, rName, domain, peerID1, peerID2)
+}
+
+func testReverseProxyServiceTargetAccessAction(rName, domain, peerID1, peerID2, rootAction string) string {
+	return fmt.Sprintf(`
+resource "netbird_reverse_proxy_service" "%s" {
+  name   = %q
+  domain = %q
+
+  targets = [
+    {
+      target_id     = %q
+      target_type   = "peer"
+      port          = 8080
+      protocol      = "http"
+      path          = "/"
+      access_action = %q
+    },
+    {
+      target_id   = %q
+      target_type = "peer"
+      port        = 8080
+      protocol    = "http"
+      path        = "/admin/"
+    }
+  ]
+
+  auth = {
+    password_auth = {
+      enabled  = true
+      password = "access-action-test"
+    }
+  }
+}`, rName, rName, domain, peerID1, rootAction, peerID2)
 }
 
 func testReverseProxyServiceWithDataSource(rName, domain, peerID string) string {
